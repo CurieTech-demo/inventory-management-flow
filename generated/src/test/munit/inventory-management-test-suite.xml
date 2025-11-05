@@ -62,7 +62,7 @@ output application/json indent=true
 	<!-- POST /items Tests -->
 	<munit:test name="post-items-valid-payload-test" description="Test POST /items with valid payload">
 		<munit:behavior>
-			<set-payload value='{"name": "Gaming Mouse", "quantity": 10, "price": 79.99, "category": "Electronics"}' mediaType="application/json"/>
+			<set-payload value='{"names": "Gaming Mouse", "quantity": 10, "price": 79.99, "category": "Electronics"}' mediaType="application/json"/>
 		</munit:behavior>
 
 		<munit:execution>
