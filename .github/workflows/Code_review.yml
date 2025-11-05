@@ -1,36 +1,41 @@
-name: Code Review
+# This is a basic workflow to help you get started with Actions
 
+name: CI
+
+# Controls when the workflow will run
 on:
+  # Triggers the workflow on push or pull request events but only for the "main" branch
+  push:
+    branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+
+  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-permissions:
-  contents: read
-
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  review:
+  # This workflow contains a single job called "build"
+  build:
+    # The type of runner that the job will run on
     runs-on: ubuntu-latest
-    # Skip PRs from forks (no secrets available)
-    if: ${{ github.event.pull_request.head.repo.fork == false }}
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4
 
-      - name: Run Curie review
-        env:
-          CURIE_API_KEY: ${{ secrets.CURIE_API_KEY }}
+      # Runs a single command using the runners shell
+      - name: Curie-review
         run: |
-          set -euo pipefail
-          # Build JSON safely
-          payload=$(jq -n \
-            --arg org_name "CurieTech-demo" \
-            --arg repo_name "${GITHUB_REPOSITORY#*/}" \
-            --arg branch_name "${{ github.head_ref }}" \
-            --argjson pr_number ${{ github.event.pull_request.number }} \
-            --arg prompt "CI-triggered code review" \
-            '{conn_type:"github", org_name:$org_name, repo_name:$repo_name, branch_name:$branch_name, pr_number:$pr_number, prompt:$prompt}')
-
-          curl -sS --fail -X POST "https://platform.curietech.ai/api/code-review/run" \
-            -H "Authorization: Bearer ${CURIE_API_KEY}" \
+          curl -X POST "https://platform.curietech.ai/api/code-review/run" \
+            -H "Authorization: Bearer ${{ secrets.CURIE_API_KEY }}" \
             -H "Content-Type: application/json" \
-            -d "$payload"
+            -d '{
+              "conn_type": "github",
+              "org_name": "CurieTech-demo",
+              "repo_name": "'"${GITHUB_REPOSITORY#*/}"'",
+              "branch_name": "'"${{ github.head_ref || github.ref_name }}"'",
+              "pr_number": ${{ github.event.pull_request.number }},
+              "prompt": "CI-triggered code review"
+            }'
