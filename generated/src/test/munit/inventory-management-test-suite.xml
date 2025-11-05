@@ -1,0 +1,275 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" 
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+	xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:file="http://www.mulesoft.org/schema/mule/file"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+		http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd
+		http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+		http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+		http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+	<munit:config name="inventory-management-test-suite" />
+	<configuration-properties file="config-test.yaml" />
+
+	<!-- Test Data Setup -->
+	<munit:before-suite name="setup-test-data">
+		<ee:transform doc:name="Create Test Inventory">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json indent=true
+---
+{
+	items: [
+		{
+			id: "test-item-1",
+			name: "Test Laptop",
+			quantity: 5,
+			price: 999.99,
+			category: "Electronics",
+			stockValue: 4999.95,
+			status: "in-stock",
+			createdAt: "2024-01-01T10:00:00.000Z",
+			updatedAt: "2024-01-01T10:00:00.000Z"
+		},
+		{
+			id: "test-item-2",
+			name: "Test Book",
+			quantity: 0,
+			price: 29.99,
+			category: "Books",
+			stockValue: 0,
+			status: "out-of-stock",
+			createdAt: "2024-01-01T11:00:00.000Z",
+			updatedAt: "2024-01-01T11:00:00.000Z"
+		}
+	]
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<file:write config-ref="fileConfig" path="${file.inventoryFile}" createParentDirectories="true" mode="OVERWRITE">
+			<file:content>#[payload]</file:content>
+		</file:write>
+	</munit:before-suite>
+
+	<!-- POST /items Tests -->
+	<munit:test name="post-items-valid-payload-test" description="Test POST /items with valid payload">
+		<munit:behavior>
+			<set-payload value='{"name": "Gaming Mouse", "quantity": 10, "price": 79.99, "category": "Electronics"}' mediaType="application/json"/>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="post-items-flow"/>
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(201)]"/>
+			<munit-tools:assert-that expression="#[payload.message]" is="#[MunitTools::equalTo('Item created successfully')]"/>
+			<munit-tools:assert-that expression="#[payload.item.name]" is="#[MunitTools::equalTo('Gaming Mouse')]"/>
+			<munit-tools:assert-that expression="#[payload.item.quantity]" is="#[MunitTools::equalTo(10)]"/>
+			<munit-tools:assert-that expression="#[payload.item.price]" is="#[MunitTools::equalTo(79.99)]"/>
+			<munit-tools:assert-that expression="#[payload.item.stockValue]" is="#[MunitTools::equalTo(799.9)]"/>
+			<munit-tools:assert-that expression="#[payload.item.status]" is="#[MunitTools::equalTo('in-stock')]"/>
+			<munit-tools:assert-that expression="#[payload.item.id]" is="#[MunitTools::notNullValue()]"/>
+		</munit:validation>
+	</munit:test>
+
+	<munit:test name="post-items-invalid-payload-test" description="Test POST /items with invalid payload" expectedErrorType="VALIDATION:INVALID_INPUT">
+		<munit:behavior>
+			<set-payload value='{"name": "", "quantity": -1, "price": 0, "category": "InvalidCategory"}' mediaType="application/json"/>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="post-items-flow"/>
+		</munit:execution>
+	</munit:test>
+
+	<munit:test name="post-items-missing-fields-test" description="Test POST /items with missing required fields" expectedErrorType="VALIDATION:INVALID_INPUT">
+		<munit:behavior>
+			<set-payload value='{"name": "Incomplete Item"}' mediaType="application/json"/>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="post-items-flow"/>
+		</munit:execution>
+	</munit:test>
+
+	<!-- GET /items/{id} Tests -->
+	<munit:test name="get-items-by-id-found-test" description="Test GET /items/{id} when item exists">
+		<munit:behavior>
+			<munit-tools:mock-when processor="http:listener">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute attributeName="path" whereValue="/items/{id}"/>
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:attributes value="#[{uriParams: {id: 'test-item-1'}}]"/>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<set-variable value="test-item-1" variableName="itemId"/>
+			<flow-ref name="get-items-by-id-flow"/>
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(200)]"/>
+			<munit-tools:assert-that expression="#[payload.id]" is="#[MunitTools::equalTo('test-item-1')]"/>
+			<munit-tools:assert-that expression="#[payload.name]" is="#[MunitTools::equalTo('Test Laptop')]"/>
+		</munit:validation>
+	</munit:test>
+
+	<munit:test name="get-items-by-id-not-found-test" description="Test GET /items/{id} when item does not exist">
+		<munit:behavior>
+			<munit-tools:mock-when processor="http:listener">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute attributeName="path" whereValue="/items/{id}"/>
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:attributes value="#[{uriParams: {id: 'non-existent-id'}}]"/>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<set-variable value="non-existent-id" variableName="itemId"/>
+			<flow-ref name="get-items-by-id-flow"/>
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(404)]"/>
+			<munit-tools:assert-that expression="#[payload.error]" is="#[MunitTools::equalTo('NOT_FOUND')]"/>
+			<munit-tools:assert-that expression="#[payload.message]" is="#[MunitTools::equalTo('Item not found')]"/>
+		</munit:validation>
+	</munit:test>
+
+	<!-- Scheduler Flow Test -->
+	<munit:test name="stock-status-scheduler-test" description="Test stock status scheduler flow">
+		<munit:execution>
+			<flow-ref name="update-stock-status-subflow"/>
+		</munit:execution>
+
+		<munit:validation>
+			<!-- Verify the scheduler runs without errors -->
+			<munit-tools:assert-that expression="#[true]" is="#[MunitTools::equalTo(true)]"/>
+		</munit:validation>
+	</munit:test>
+
+	<!-- Subflow Tests -->
+	<munit:test name="validate-item-subflow-valid-test" description="Test validate-item-subflow with valid item">
+		<munit:behavior>
+			<set-payload value='{"name": "Valid Item", "quantity": 5, "price": 25.99, "category": "Electronics"}' mediaType="application/json"/>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="validate-item-subflow"/>
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-that expression="#[vars.validationResult.isValid]" is="#[MunitTools::equalTo(true)]"/>
+			<munit-tools:assert-that expression="#[payload.name]" is="#[MunitTools::equalTo('Valid Item')]"/>
+		</munit:validation>
+	</munit:test>
+
+	<munit:test name="validate-item-subflow-invalid-test" description="Test validate-item-subflow with invalid item" expectedErrorType="VALIDATION:INVALID_INPUT">
+		<munit:behavior>
+			<set-payload value='{"name": "", "quantity": -1, "price": 0, "category": "Invalid"}' mediaType="application/json"/>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="validate-item-subflow"/>
+		</munit:execution>
+	</munit:test>
+
+	<munit:test name="transform-item-subflow-test" description="Test transform-item-subflow">
+		<munit:behavior>
+			<set-payload value='{"name": "Transform Test", "quantity": 3, "price": 15.50, "category": "Books"}' mediaType="application/json"/>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="transform-item-subflow"/>
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-that expression="#[vars.transformedItem.name]" is="#[MunitTools::equalTo('Transform Test')]"/>
+			<munit-tools:assert-that expression="#[vars.transformedItem.stockValue]" is="#[MunitTools::equalTo(46.5)]"/>
+			<munit-tools:assert-that expression="#[vars.transformedItem.status]" is="#[MunitTools::equalTo('in-stock')]"/>
+			<munit-tools:assert-that expression="#[vars.transformedItem.id]" is="#[MunitTools::notNullValue()]"/>
+		</munit:validation>
+	</munit:test>
+
+	<munit:test name="store-item-subflow-test" description="Test store-item-subflow">
+		<munit:behavior>
+			<set-variable value='{"id": "store-test-id", "name": "Store Test", "quantity": 2, "price": 10.00, "category": "Home", "stockValue": 20.00, "status": "in-stock", "createdAt": "2024-01-01T12:00:00.000Z", "updatedAt": "2024-01-01T12:00:00.000Z"}' variableName="transformedItem"/>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="store-item-subflow"/>
+		</munit:execution>
+
+		<munit:validation>
+			<!-- Verify no errors occurred during storage -->
+			<munit-tools:assert-that expression="#[true]" is="#[MunitTools::equalTo(true)]"/>
+		</munit:validation>
+	</munit:test>
+
+	<munit:test name="retrieve-item-subflow-found-test" description="Test retrieve-item-subflow when item exists">
+		<munit:behavior>
+			<set-variable value="test-item-1" variableName="itemId"/>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="retrieve-item-subflow"/>
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-that expression="#[vars.foundItem]" is="#[MunitTools::notNullValue()]"/>
+			<munit-tools:assert-that expression="#[vars.foundItem.id]" is="#[MunitTools::equalTo('test-item-1')]"/>
+		</munit:validation>
+	</munit:test>
+
+	<munit:test name="retrieve-item-subflow-not-found-test" description="Test retrieve-item-subflow when item does not exist">
+		<munit:behavior>
+			<set-variable value="non-existent-id" variableName="itemId"/>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="retrieve-item-subflow"/>
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-that expression="#[vars.foundItem]" is="#[MunitTools::nullValue()]"/>
+		</munit:validation>
+	</munit:test>
+
+	<munit:test name="update-stock-status-subflow-test" description="Test update-stock-status-subflow">
+		<munit:execution>
+			<flow-ref name="update-stock-status-subflow"/>
+		</munit:execution>
+
+		<munit:validation>
+			<!-- Verify the update runs without errors -->
+			<munit-tools:assert-that expression="#[true]" is="#[MunitTools::equalTo(true)]"/>
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test Data Cleanup -->
+	<munit:after-suite name="cleanup-test-data">
+		<try>
+			<file:delete config-ref="fileConfig" path="${file.inventoryFile}"/>
+			<error-handler>
+				<on-error-continue type="ANY">
+					<!-- Ignore cleanup errors -->
+				</on-error-continue>
+			</error-handler>
+		</try>
+	</munit:after-suite>
+
+</mule>

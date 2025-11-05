@@ -1,0 +1,22 @@
+# Production Environment Configuration
+http:
+  host: "0.0.0.0"
+  port: "8080"
+  basePath: "/api/v1"
+
+file:
+  storagePath: "/opt/app/data"
+  inventoryFile: "inventory.json"
+
+scheduler:
+  stockUpdateFrequency: "5"
+  stockUpdateTimeUnit: "MINUTES"
+
+validation:
+  categories:
+    - "Electronics"
+    - "Clothing"
+    - "Books"
+    - "Home"
+    - "Sports"
+    - "Other"

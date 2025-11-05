@@ -1,0 +1,383 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" 
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:file="http://www.mulesoft.org/schema/mule/file"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+		http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+		http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+	<!-- POST /items - Create new item -->
+	<flow name="post-items-flow" doc:name="POST /items">
+		<http:listener config-ref="httpListenerConfig" path="/items" allowedMethods="POST" doc:name="POST /items Listener"/>
+		
+		<logger level="INFO" doc:name="Log Request" message="Received POST /items request with payload: #[write(payload, 'application/json')]"/>
+		
+		<flow-ref name="validate-item-subflow" doc:name="Validate Item"/>
+		
+		<flow-ref name="transform-item-subflow" doc:name="Transform Item"/>
+		
+		<flow-ref name="store-item-subflow" doc:name="Store Item"/>
+		
+		<ee:transform doc:name="Success Response">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	message: "Item created successfully",
+	item: vars.transformedItem,
+	timestamp: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss.SSSZ"}
+}]]></ee:set-payload>
+			</ee:message>
+			<ee:variables>
+				<ee:set-variable variableName="httpStatus">201</ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		
+		<logger level="INFO" doc:name="Log Success" message="Item created successfully with ID: #[vars.transformedItem.id]"/>
+		
+		<error-handler ref="globalErrorHandler"/>
+	</flow>
+
+	<!-- GET /items/{id} - Retrieve item by ID -->
+	<flow name="get-items-by-id-flow" doc:name="GET /items/{id}">
+		<http:listener config-ref="httpListenerConfig" path="/items/{id}" allowedMethods="GET" doc:name="GET /items/{id} Listener"/>
+		
+		<logger level="INFO" doc:name="Log Request" message="Received GET /items/{id} request for ID: #[attributes.uriParams.id]"/>
+		
+		<set-variable value="#[attributes.uriParams.id]" variableName="itemId" doc:name="Set Item ID"/>
+		
+		<flow-ref name="retrieve-item-subflow" doc:name="Retrieve Item"/>
+		
+		<choice doc:name="Item Found?">
+			<when expression="#[vars.foundItem != null]">
+				<ee:transform doc:name="Success Response">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+vars.foundItem]]></ee:set-payload>
+					</ee:message>
+					<ee:variables>
+						<ee:set-variable variableName="httpStatus">200</ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+				<logger level="INFO" doc:name="Log Success" message="Item found and returned for ID: #[vars.itemId]"/>
+			</when>
+			<otherwise>
+				<ee:transform doc:name="Not Found Response">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	error: "NOT_FOUND",
+	message: "Item not found",
+	details: "No item found with ID: " ++ vars.itemId,
+	timestamp: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss.SSSZ"}
+}]]></ee:set-payload>
+					</ee:message>
+					<ee:variables>
+						<ee:set-variable variableName="httpStatus">404</ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+				<logger level="WARN" doc:name="Log Not Found" message="Item not found for ID: #[vars.itemId]"/>
+			</otherwise>
+		</choice>
+		
+		<error-handler ref="globalErrorHandler"/>
+	</flow>
+
+	<!-- Scheduler Flow - Update stock status -->
+	<flow name="stock-status-scheduler-flow" doc:name="Stock Status Scheduler">
+		<scheduler doc:name="Stock Update Scheduler">
+			<scheduling-strategy>
+				<fixed-frequency frequency="${scheduler.stockUpdateFrequency}" timeUnit="MINUTES"/>
+			</scheduling-strategy>
+		</scheduler>
+		
+		<logger level="INFO" doc:name="Log Scheduler Start" message="Starting stock status update job at #[now()]"/>
+		
+		<flow-ref name="update-stock-status-subflow" doc:name="Update Stock Status"/>
+		
+		<logger level="INFO" doc:name="Log Scheduler Complete" message="Stock status update job completed at #[now()]"/>
+		
+		<error-handler>
+			<on-error-continue type="ANY">
+				<logger level="ERROR" doc:name="Log Scheduler Error" message="Error in stock status scheduler: #[error.description]"/>
+			</on-error-continue>
+		</error-handler>
+	</flow>
+
+	<!-- SUBFLOWS -->
+
+	<!-- Validate Item Subflow -->
+	<sub-flow name="validate-item-subflow" doc:name="Validate Item Subflow">
+		<ee:transform doc:name="Validate Input">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+
+fun isValidCategory(category: String, validCategories: Array<String>): Boolean =
+	validCategories contains category
+
+fun isValidName(name: String): Boolean =
+	(name != null) and (sizeOf(trim(name)) > 0)
+
+fun isValidQuantity(quantity: Number): Boolean =
+	(quantity != null) and (quantity >= 0) and (quantity is Number)
+
+fun isValidPrice(price: Number): Boolean =
+	(price != null) and (price > 0) and (price is Number)
+
+fun validateItem(item: Object, validCategories: Array<String>): Object =
+{
+	isValid: isValidName(item.name) and 
+			 isValidQuantity(item.quantity) and 
+			 isValidPrice(item.price) and 
+			 isValidCategory(item.category, validCategories),
+	errors: [
+		(if (!isValidName(item.name)) "Name is required and cannot be empty" else null),
+		(if (!isValidQuantity(item.quantity)) "Quantity must be a non-negative number" else null),
+		(if (!isValidPrice(item.price)) "Price must be a positive number" else null),
+		(if (!isValidCategory(item.category, validCategories)) "Category must be one of: " ++ (validCategories joinBy ", ") else null)
+	] filter ($ != null)
+}
+
+var validCategories = ["Electronics", "Clothing", "Books", "Home", "Sports", "Other"]
+var validationResult = validateItem(payload, validCategories)
+output application/json
+---
+if (validationResult.isValid)
+	payload
+else
+	null]]></ee:set-payload>
+			</ee:message>
+			<ee:variables>
+				<ee:set-variable variableName="validationResult"><![CDATA[%dw 2.0
+
+fun isValidCategory(category: String, validCategories: Array<String>): Boolean =
+	validCategories contains category
+
+fun isValidName(name: String): Boolean =
+	(name != null) and (sizeOf(trim(name)) > 0)
+
+fun isValidQuantity(quantity: Number): Boolean =
+	(quantity != null) and (quantity >= 0) and (quantity is Number)
+
+fun isValidPrice(price: Number): Boolean =
+	(price != null) and (price > 0) and (price is Number)
+
+fun validateItem(item: Object, validCategories: Array<String>): Object =
+{
+	isValid: isValidName(item.name) and 
+			 isValidQuantity(item.quantity) and 
+			 isValidPrice(item.price) and 
+			 isValidCategory(item.category, validCategories),
+	errors: [
+		(if (!isValidName(item.name)) "Name is required and cannot be empty" else null),
+		(if (!isValidQuantity(item.quantity)) "Quantity must be a non-negative number" else null),
+		(if (!isValidPrice(item.price)) "Price must be a positive number" else null),
+		(if (!isValidCategory(item.category, validCategories)) "Category must be one of: " ++ (validCategories joinBy ", ") else null)
+	] filter ($ != null)
+}
+
+var validCategories = ["Electronics", "Clothing", "Books", "Home", "Sports", "Other"]
+output application/java
+---
+validateItem(payload, validCategories)]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		
+		<choice doc:name="Is Valid?">
+			<when expression="#[vars.validationResult.isValid]">
+				<logger level="DEBUG" doc:name="Log Validation Success" message="Item validation passed"/>
+			</when>
+			<otherwise>
+				<ee:transform doc:name="Validation Error">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	error: "VALIDATION_ERROR",
+	message: "Invalid input data provided",
+	details: vars.validationResult.errors,
+	timestamp: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss.SSSZ"}
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+				<raise-error type="VALIDATION:INVALID_INPUT" description="#[write(vars.validationResult.errors, 'application/json')]"/>
+			</otherwise>
+		</choice>
+	</sub-flow>
+
+	<!-- Transform Item Subflow -->
+	<sub-flow name="transform-item-subflow" doc:name="Transform Item Subflow">
+		<ee:transform doc:name="Transform Item" doc:id="b5f2073f-a49c-471a-ae0d-8e3ed3a4fd99">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	id: uuid(),
+	name: payload.name,
+	quantity: payload.quantity,
+	price: payload.price,
+	category: payload.category,
+	stockValue: payload.quantity * payload.price,
+	status: if (payload.quantity > 0) "in-stock" else "out-of-stock",
+	createdAt: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss.SSSZ"},
+	updatedAt: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss.SSSZ"}
+}]]></ee:set-payload>
+			</ee:message>
+			<ee:variables>
+				<ee:set-variable variableName="transformedItem"><![CDATA[%dw 2.0
+output application/java
+---
+{
+	id: uuid(),
+	name: payload.name,
+	quantity: payload.quantity,
+	price: payload.price,
+	category: payload.category,
+	stockValue: payload.quantity * payload.price,
+	status: if (payload.quantity > 0) "in-stock" else "out-of-stock",
+	createdAt: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss.SSSZ"},
+	updatedAt: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss.SSSZ"}
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<logger level="DEBUG" doc:name="Log Transformation" message="Item transformed with ID: #[vars.transformedItem.id]"/>
+	</sub-flow>
+
+	<!-- Store Item Subflow -->
+	<sub-flow name="store-item-subflow" doc:name="Store Item Subflow">
+		<try doc:name="Try Store Item">
+			<!-- Read existing inventory -->
+			<file:read config-ref="fileConfig" path="${file.inventoryFile}" doc:name="Read Inventory File"/>
+			
+			<ee:transform doc:name="Add Item to Inventory">
+				<ee:message>
+					<ee:set-payload><![CDATA[%dw 2.0
+var existingInventory = read(payload, "application/json")
+var newItem = vars.transformedItem
+output application/json indent=true
+---
+{
+	items: existingInventory.items ++ [newItem]
+}]]></ee:set-payload>
+				</ee:message>
+			</ee:transform>
+			
+			<!-- Write updated inventory -->
+			<file:write config-ref="fileConfig" path="${file.inventoryFile}" doc:name="Write Inventory File" createParentDirectories="true" mode="OVERWRITE">
+				<file:content>#[payload]</file:content>
+			</file:write>
+			
+			<logger level="DEBUG" doc:name="Log Store Success" message="Item stored successfully in inventory file"/>
+			
+			<error-handler>
+				<on-error-propagate type="FILE:FILE_NOT_FOUND">
+					<!-- Create new inventory file if it doesn't exist -->
+					<ee:transform doc:name="Create New Inventory">
+						<ee:message>
+							<ee:set-payload><![CDATA[%dw 2.0
+output application/json indent=true
+---
+{
+	items: [vars.transformedItem]
+}]]></ee:set-payload>
+						</ee:message>
+					</ee:transform>
+					
+					<file:write config-ref="fileConfig" path="${file.inventoryFile}" doc:name="Create Inventory File" createParentDirectories="true" mode="OVERWRITE">
+						<file:content>#[payload]</file:content>
+					</file:write>
+					
+					<logger level="INFO" doc:name="Log New File Created" message="New inventory file created with first item"/>
+				</on-error-propagate>
+			</error-handler>
+		</try>
+	</sub-flow>
+
+	<!-- Retrieve Item Subflow -->
+	<sub-flow name="retrieve-item-subflow" doc:name="Retrieve Item Subflow">
+		<try doc:name="Try Retrieve Item">
+			<file:read config-ref="fileConfig" path="${file.inventoryFile}" doc:name="Read Inventory File"/>
+			
+			<ee:transform doc:name="Find Item by ID">
+				<ee:message>
+					<ee:set-payload><![CDATA[%dw 2.0
+var inventory = read(payload, "application/json")
+var targetId = vars.itemId
+output application/json
+---
+inventory.items filter ($.id == targetId)]]></ee:set-payload>
+				</ee:message>
+				<ee:variables>
+					<ee:set-variable variableName="foundItem"><![CDATA[%dw 2.0
+var inventory = read(payload, "application/json")
+var targetId = vars.itemId
+var foundItems = inventory.items filter ($.id == targetId)
+output application/java
+---
+if (sizeOf(foundItems) > 0) foundItems[0] else null]]></ee:set-variable>
+				</ee:variables>
+			</ee:transform>
+			
+			<error-handler>
+				<on-error-continue type="FILE:FILE_NOT_FOUND">
+					<set-variable value="#[null]" variableName="foundItem" doc:name="Set Not Found"/>
+					<logger level="WARN" doc:name="Log File Not Found" message="Inventory file not found"/>
+				</on-error-continue>
+			</error-handler>
+		</try>
+	</sub-flow>
+
+	<!-- Update Stock Status Subflow -->
+	<sub-flow name="update-stock-status-subflow" doc:name="Update Stock Status Subflow">
+		<try doc:name="Try Update Stock Status">
+			<file:read config-ref="fileConfig" path="${file.inventoryFile}" doc:name="Read Inventory File"/>
+			
+			<ee:transform doc:name="Update Stock Status">
+				<ee:message>
+					<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	items: payload.items map (item, index) -> {
+		id: item.id,
+		name: item.name,
+		quantity: item.quantity,
+		price: item.price,
+		category: item.category,
+		stockValue: item.stockValue,
+		status: if (item.quantity > 0) "in-stock" else "out-of-stock",
+		createdAt: item.createdAt,
+		updatedAt: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss.SSSZ"}
+	}
+}]]></ee:set-payload>
+				</ee:message>
+			</ee:transform>
+			
+			<file:write config-ref="fileConfig" path="${file.inventoryFile}" doc:name="Write Updated Inventory" createParentDirectories="true" mode="OVERWRITE">
+				<file:content>#[payload]</file:content>
+			</file:write>
+			
+			<logger level="INFO" doc:name="Log Update Success" message="Stock status updated successfully"/>
+			
+			<error-handler>
+				<on-error-continue type="FILE:FILE_NOT_FOUND">
+					<logger level="WARN" doc:name="Log No File" message="No inventory file found to update stock status"/>
+				</on-error-continue>
+			</error-handler>
+		</try>
+	</sub-flow>
+
+</mule>

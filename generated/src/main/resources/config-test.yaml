@@ -1,0 +1,22 @@
+# Test Environment Configuration
+http:
+  host: "0.0.0.0"
+  port: "8082"
+  basePath: "/api/v1"
+
+file:
+  storagePath: "src/test/resources/data"
+  inventoryFile: "inventory-test.json"
+
+scheduler:
+  stockUpdateFrequency: "1"
+  stockUpdateTimeUnit: "MINUTES"
+
+validation:
+  categories:
+    - "Electronics"
+    - "Clothing"
+    - "Books"
+    - "Home"
+    - "Sports"
+    - "Other"
